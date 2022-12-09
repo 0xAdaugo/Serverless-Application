@@ -6,9 +6,7 @@ service: serverless-adaugo-app
 plugins:
   - serverless-webpack
   - serverless-iam-roles-per-function
-  - serverless-reqvalidator-plugin
-  - serverless-aws-documentation
-
+  - serverless-plugin-tracing
 
 provider:
   name: aws
@@ -26,60 +24,24 @@ provider:
   environment:
     PROJECT_NAME: adaugo-app
     TODOS_TABLE: adaugo-app-serverless-application-todo-${self:provider.stage}
+    TODOS_CREATED_AT_INDEX: CreatedAtIndex
     S3_BUCKET_NAME: adaugo-app-serverless-application-todo-${self:provider.stage}
+    SIGNED_URL_EXPIRATION: 300
 
 
 
-custom:
-  documentation:
-    api:
-      info:
-        version: '1.0.0'
-        title: serverless-api
-        description: serverless-api
-    models:
-      - name: CreateTodoRequest
-        contentType: "application/json"
-        schema:
-          required:
-            - name
-            - dueDate
-          properties:
-            name:
-              minLength: 1
-              type: string
-            dueDate:
-              type: string
-      - name: UpdateTodoRequest
-        contentType: "application/json"
-        schema:
-          required:
-            - name
-            - dueDate
-            - done
-          properties:
-            name:
-              minLength: 1
-              type: string
-            dueDate:
-              type: string
-            done:
-              type: boolean
-          
 
-
-
- # logs:
+  logs:
     # Enable API Gateway logs
-   # restApi: true
+    restApi: true
 
-  #role:
-      #statements:
-       # - Effect: Allow
-        #  Action:
-          #  - xray:PutTelemetryRecords
-          #  - xray:PutTraceSegments
-          #Resource: "*"
+  # role:
+  #    # statements:
+  #      # - Effect: Allow
+  #         Action:
+  #         #  - xray:PutTelemetryRecords
+  #         #  - xray:PutTraceSegments
+  #         Resource: "*"
 
 
 
@@ -106,6 +68,11 @@ functions:
         Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.TODOS_TABLE}
       - Effect: Allow
         Action:
+        - dynamodb:Query
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.TODOS_TABLE}/index/${self:provider.environment.TODOS_CREATED_AT_INDEX}
+      - Effect: Allow
+        Action:
+          - xray:PutTelemetryRecords
           - xray:PutTraceSegments
         Resource: 
           - '*'
@@ -119,12 +86,9 @@ functions:
           path: todos
           cors: true
           authorizer: Auth
-          documentation:
-            summary: "Create a new todo item"
-            description: "Create a new todo item"
-            requestModels:
-              "application/json": CreateTodoRequest
-          reqValidatorName: RequestBodyValidator
+          request:
+            schema:
+              application/json: ${file(models/create-todo-model.json)}
     iamRoleStatementsName: ${self:provider.environment.PROJECT_NAME}-create-todo-role-${self:provider.stage}
     iamRoleStatements:
       - Effect: Allow
@@ -133,6 +97,7 @@ functions:
         Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.TODOS_TABLE}
       - Effect: Allow
         Action:
+          - xray:PutTelemetryRecords
           - xray:PutTraceSegments
         Resource: 
           - '*'
@@ -149,12 +114,9 @@ functions:
           path: todos/{todoId}
           cors: true
           authorizer: Auth
-          documentation:
-            summary: "Update a todo item"
-            description: "Update a todo item"
-            requestModels:
-              "application/json": UpdateTodoRequest
-          reqValidatorName: RequestBodyValidator
+          request:
+            schema:
+              application/json: ${file(models/update-todo-model.json)}
     iamRoleStatementsName: ${self:provider.environment.PROJECT_NAME}-update-todo-role-${self:provider.stage}
     iamRoleStatements:
       - Effect: Allow
@@ -163,6 +125,7 @@ functions:
         Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.TODOS_TABLE}
       - Effect: Allow
         Action:
+          - xray:PutTelemetryRecords
           - xray:PutTraceSegments
         Resource: 
           - '*'
@@ -186,6 +149,7 @@ functions:
         Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.TODOS_TABLE}
       - Effect: Allow
         Action:
+          - xray:PutTelemetryRecords
           - xray:PutTraceSegments
         Resource: 
           - '*'
@@ -204,9 +168,19 @@ functions:
     iamRoleStatements:
       - Effect: Allow
         Action:
-          - s3:*
-          - xray:PutTraceSegments 
+          - dynamodb:UpdateItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.TODOS_TABLE}
+      - Effect: Allow
+        Action:
+          - s3:PutObject
+          - s3:GetObject 
         Resource: arn:aws:s3:::${self:provider.environment.S3_BUCKET_NAME}/*
+      - Effect: Allow
+        Action:
+          - xray:PutTelemetryRecords
+          - xray:PutTraceSegments
+        Resource: 
+          - '*'
 
 
 resources:
@@ -220,6 +194,8 @@ resources:
             AttributeType: S
           - AttributeName: todoId
             AttributeType: S
+          - AttributeName: createdAt
+            AttributeType: S 
         KeySchema:
           - AttributeName: userId
             KeyType: HASH
@@ -227,15 +203,16 @@ resources:
             KeyType: RANGE
         BillingMode: PAY_PER_REQUEST
         TableName: ${self:provider.environment.TODOS_TABLE}
-    onlyBody:
-      Type: "AWS::ApiGateway::RequestValidator"
-      Properties:
-        Name: 'only-body'
-        RestApiId:
-          Ref: ApiGatewayRestApi
-        ValidateRequestBody: true
-        ValidateRequestParameters: false
-    AttachmentsBucket:
+        LocalSecondaryIndexes:
+          - IndexName: ${self:provider.environment.TODOS_CREATED_AT_INDEX}
+            KeySchema:
+              - AttributeName: userId
+                KeyType: HASH
+              - AttributeName: createdAt
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+    AttachmentsBucketDev:
       Type: AWS::S3::Bucket
       Properties:
         BucketName: ${self:provider.environment.S3_BUCKET_NAME}
@@ -251,16 +228,7 @@ resources:
                 - POST
                 - DELETE
                 - HEAD
-              MaxAge: 300
-
-    RequestBodyValidator:
-      Type: AWS::ApiGateway::RequestValidator
-      Properties:
-        Name: 'request-body-validator'
-        RestApiId:
-          Ref: ApiGatewayRestApi
-        ValidateRequestBody: true
-        ValidateRequestParameters: false
+              MaxAge: 3000
 
     GatewayResponseDefault4XX:
       Type: AWS::ApiGateway::GatewayResponse
@@ -296,4 +264,4 @@ resources:
               Principal: '*'
               Action: 's3:GetObject'
               Resource: 'arn:aws:s3:::${self:provider.environment.S3_BUCKET_NAME}/*'
-        Bucket: !Ref AttachmentsBucket
+        Bucket: !Ref AttachmentsBucketDev
